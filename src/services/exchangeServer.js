@@ -8,10 +8,10 @@ let BUFFER_COLLECTOR = Buffer.alloc(0);
 // Create a TCP server
 const server = net.createServer((client) => {
   console.log("Client connected.");
-  
+
   client.on("data", (data) => {
     BUFFER_COLLECTOR = Buffer.concat([BUFFER_COLLECTOR, data]);
-
+    
     while (BUFFER_COLLECTOR.length >= 2) {
       const header = BUFFER_COLLECTOR.slice(0, 2);
       const messageType = header.readInt8(0);
