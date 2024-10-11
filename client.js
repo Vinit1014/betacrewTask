@@ -1,15 +1,67 @@
 const net = require("net");
 const readline = require("readline");
+const fs = require("fs");
+
+const PORT = 3000;
+const receivedPackets = [];
+
+// Load packets from packets.json if it exists
+const PACKETS_FILE = "packets.json";
+let savedPackets = [];
+if (fs.existsSync(PACKETS_FILE)) {
+  savedPackets = JSON.parse(fs.readFileSync(PACKETS_FILE, "utf8"));
+}
 
 const client = new net.Socket();
-const PORT = 3000;
-
 const rl = readline.createInterface({
   input: process.stdin,
   output: process.stdout,
 });
 
-// Connect to the server
+// Function to check if packet with given sequence number exists in savedPackets
+const isPacketInFile = (packetSequence) => {
+  return savedPackets.some((packet) => packet.packetSequence === packetSequence);
+};
+
+// Handle incoming data from the server
+client.on("data", (data) => {
+  console.log("Received raw data:", data);
+
+  // Decode the received data
+  while (data.length >= 17) { // Each packet is 17 bytes long
+    const symbol = data.slice(0, 4).toString("ascii").trim();
+    const buySellIndicator = String.fromCharCode(data.readUInt8(4));
+    const quantity = data.readInt32BE(5);
+    const price = data.readInt32BE(9);
+    const packetSequence = data.readInt32BE(13);
+
+    // Store the received packet
+    const packet = { symbol, buySellIndicator, quantity, price, packetSequence };
+    
+    // Only add packet if it isn't already saved
+    if (!isPacketInFile(packetSequence)) {
+      receivedPackets.push(packet);
+      savedPackets.push(packet); // Update the in-memory savedPackets
+    }
+
+    // Process the remaining data
+    data = data.slice(17); // Move past the current packet
+  }
+
+  // Write the received packets to a JSON file once the connection is closed
+  if (data.length === 0 && receivedPackets.length > 0) {
+    fs.writeFileSync(PACKETS_FILE, JSON.stringify(savedPackets, null, 2));
+    console.log("New packets saved to packets.json");
+  }
+});
+
+// Handle when the server closes the connection
+client.on("end", () => {
+  console.log("Connection closed by server.");
+  rl.close();
+});
+
+// Connect to the server and prompt user for input
 client.connect(PORT, "localhost", () => {
   console.log("Connected to server!");
 
@@ -25,78 +77,25 @@ client.connect(PORT, "localhost", () => {
       // Call Type 2: Resend Packet
       rl.question("Enter the sequence number (resendSeq) to resend: ", (resendSeqInput) => {
         const resendSeq = parseInt(resendSeqInput, 10);
-        const requestPayload = Buffer.from([callType, resendSeq]); // Send callType 2 and resendSeq
-        client.write(requestPayload);
+
+        // Check if the packet is already present in packets.json
+        if (isPacketInFile(resendSeq)) {
+          console.log(`Packet with sequence ${resendSeq} is already present in packets.json.`);
+          client.destroy(); // Close connection since we don't need to request anything
+        } else {
+          const requestPayload = Buffer.from([callType, resendSeq]); // Send callType 2 and resendSeq
+          client.write(requestPayload);
+        }
       });
     } else {
       console.log("Invalid call type.");
-      client.destroy();
+      client.destroy(); // Close connection if invalid input
     }
   });
 });
 
-// Function to decode the received data
-function decodePacket(packetBuffer) {
-  let offset = 0;
-
-  // Extract Symbol (4 bytes, ASCII string)
-  const symbol = packetBuffer.toString("ascii", offset, offset + 4);
-  offset += 4;
-
-  // Extract Buy/Sell Indicator (1 byte, ASCII string)
-  const buySellIndicator = packetBuffer.toString("ascii", offset, offset + 1);
-  offset += 1;
-
-  // Extract Quantity (4 bytes, int32 in Big Endian)
-  const quantity = packetBuffer.readInt32BE(offset);
-  offset += 4;
-
-  // Extract Price (4 bytes, int32 in Big Endian)
-  const price = packetBuffer.readInt32BE(offset);
-  offset += 4;
-
-  // Extract Packet Sequence (4 bytes, int32 in Big Endian)
-  const packetSequence = packetBuffer.readInt32BE(offset);
-  offset += 4;
-
-  // Return the decoded packet
-  return {
-    symbol,
-    buySellIndicator,
-    quantity,
-    price,
-    packetSequence,
-  };
-}
-
-// Handle data received from server
-client.on("data", (data) => {
-  console.log("Received raw data:", data);
-
-  // Assuming each packet is 17 bytes (4 + 1 + 4 + 4 + 4)
-  const packetSize = 17;
-
-  // Process each packet individually
-  for (let i = 0; i < data.length; i += packetSize) {
-    const packetBuffer = data.slice(i, i + packetSize);
-
-    // Decode the packet
-    const decodedPacket = decodePacket(packetBuffer);
-
-    // Display the decoded packet
-    console.log("Decoded Packet:", decodedPacket);
-  }
-
-  rl.close(); // Close the readline interface
-  client.destroy(); // Close the connection after receiving data
-});
-
-// Handle connection close
-client.on("close", () => {
-  console.log("Connection closed");
-});
-
-// Handle error events
+// Handle errors
 client.on("error", (err) => {
-  console.error("Error occurred:", err);
+  console.error("Connection error:", err);
+  rl.close();
 });
